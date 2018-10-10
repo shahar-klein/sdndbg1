@@ -13,7 +13,6 @@ from ovsdbapp.backend.ovs_idl import connection
 from ovsdbapp.backend.ovs_idl import idlutils
 from impl_idl import NGNOvnNbApiIdlImpl, NGNOvnSbApiIdlImpl, NGNOvsdbIdl
 
-
 DEBUG = False
 OVNNB_DB = None
 OVNSB_DB = None
@@ -93,6 +92,110 @@ def _get_distributed_gw_port(PBIdx, port):
     port_info.append("--")
     port_info.append(hostname)
     return port_info
+
+def trace_ip(args, from_port=None, to_port=None):
+    assert from_port is not None
+    mac, ips = _get_port_mac_ip(from_port.addresses, from_port.dynamic_addresses)
+    dst_mac = "ff:ff:ff:ff:ff:ff"
+    dst_ips = "255.255.255.255"
+    if to_port:
+        dst_mac, dst_ips = _get_port_mac_ip(to_port.addresses, to_port.dynamic_addresses)
+    trace_str = ['inport == "{}"'.format(from_port.name)]
+    trace_str.append('eth.src == {}'.format(mac))
+    trace_str.append('eth.dst == {}'.format(dst_mac))
+    trace_str.append('ip4')
+    trace_str.append('ip4.src == {}'.format(ips))
+    trace_str.append('ip4.dst == {}'.format(dst_ips))
+    trace_str.append('ip.ttl == {}'.format(args.ttl))
+    return trace_str
+
+
+def trace_udp(args, from_port=None, to_port=None):
+    assert from_port is not None
+    trace_str = trace_ip(args, from_port, to_port)
+    trace_str.append('udp')
+    if args.sport is not None:
+        trace_str.append('udp.src == {}'.format(args.sport))
+    if args.dport is not None:
+        trace_str.append('udp.dst == {}'.format(args.dport))
+    return trace_str
+
+
+def trace_icmp4(args, from_port=None, to_port=None):
+    trace_str = trace_ip(args, from_port, to_port)
+    trace_str.append('icmp4')
+    if args.icmp_type is not None:
+        trace_str.append('icmp4.type == {}'.format(args.icmp_type))
+    if args.icmp_code is not None:
+        trace_str.append('icmp4_code == {}'.format(args.icmp_code))
+    return trace_str
+
+
+def trace_dhcp4(args, from_port=None, to_port=None):
+    trace_str = trace_ip(args, from_port, to_port)
+    trace_str.append('udp')
+    trace_str.append('udp.src == 68')
+    trace_str.append('udp.dst == 67')
+    return trace_str
+
+
+def trace_arp(args, from_port=None, to_port=None):
+    mac, ips = _get_port_mac_ip(from_port.addresses, from_port.dynamic_addresses)
+    dst_mac = "ff:ff:ff:ff:ff:ff"
+    trace_str = ['inport == "{}"'.format(from_port.name)]
+    trace_str.append('eth.src == {}'.format(mac))
+    trace_str.append('eth.dst == {}'.format(dst_mac))
+    trace_str.append('arp.tpa == {}'.format(args.arp_tpa))
+    trace_str.append('arp.op == {}'.format(args.arp_op))
+    trace_str.append('arp.spa == {}'.format(ips))
+    trace_str.append('arp.sha == {}'.format(mac))
+    return trace_str
+
+def trace_tcp(args, from_port=None, to_port=None):
+    trace_str = trace_ip(args, from_port, to_port)
+    trace_str.append('tcp')
+    if args.sport is not None:
+        trace_str.append('tcp.src == {}'.format(args.sport))
+    if args.dport is not None:
+        trace_str.append('tcp.dst == {}'.format(args.dport))
+    return trace_str
+
+# trace command parser
+trace_parser = argparse.ArgumentParser(description="Trace packet flow based on OVNSB Logical Flows")
+trace_parser.add_argument('--from', dest='from_lport', required=True, help="Specify the source logical port")
+trace_parser.add_argument('--to', dest='to_lport', help="Specify the destination logical port")
+trace_subparsers = trace_parser.add_subparsers(title='Subcommands', description='Supported protocols')
+
+ip_parser = trace_subparsers.add_parser('ip4', help="Trace IPv4 packet")
+ip_parser.add_argument('--ttl', type=int, default=32)
+ip_parser.set_defaults(func=trace_ip)
+
+udp_parser = trace_subparsers.add_parser('udp', help="Trace UDP packet")
+udp_parser.add_argument('--ttl', type=int, default=32)
+udp_parser.add_argument('--src', dest='sport', type=int, help="Source UDP port")
+udp_parser.add_argument('--dst', dest='dport', type=int, help="Destination UDP port")
+udp_parser.set_defaults(func=trace_udp)
+
+tcp_parser = trace_subparsers.add_parser('tcp', help="Trace TCP packet", )
+tcp_parser.add_argument('--ttl', type=int, default=32)
+tcp_parser.add_argument('--src', dest='sport', type=int, help="Source TCP port")
+tcp_parser.add_argument('--dst', dest='dport', type=int, help="Destination TCP port")
+tcp_parser.set_defaults(func=trace_tcp)
+
+icmp4_parser = trace_subparsers.add_parser('icmp4', help="Trace ICMP4 packet")
+icmp4_parser.add_argument('--ttl', type=int, default=32)
+icmp4_parser.add_argument('--type', dest='icmp_type', type=int, help="ICMP4 type")
+icmp4_parser.add_argument('--code', dest='icmp_code', type=int, help="ICMP4 code")
+icmp4_parser.set_defaults(func=trace_icmp4)
+
+arp_parser = trace_subparsers.add_parser('arp', help="Trace ARP packet")
+arp_parser.add_argument('--op', dest='arp_op', type=int, help='ARP operation')
+arp_parser.add_argument('--tpa', dest='arp_tpa', type=int, help='ARP Target protocol address')
+arp_parser.set_defaults(func=trace_arp)
+
+dhcp_parser = trace_subparsers.add_parser('dhcp4', help="Trace DHCP packet")
+dhcp_parser.add_argument('--ttl', type=int, default=32)
+dhcp_parser.set_defaults(func=trace_dhcp4)
 
 
 class Ovninfo(cmd2.Cmd):
@@ -222,6 +325,30 @@ class Ovninfo(cmd2.Cmd):
             lr_info.append(_get_rsrc_tunnel_key(DBIdx, lr.name))
             table.add_row(lr_info)
         self.poutput(str(table))
+
+    @cmd2.with_argparser(trace_parser)
+    def do_trace(self, args):
+        #import pdb; pdb.set_trace();
+        from_port_info = OVNNB_DB.lsp_get(args.from_lport).execute()
+        if not from_port_info:
+            from_port_info = OVNNB_DB.lrp_get(args.from_lport).execute()
+        if not from_port_info:
+            raise Exception("Invalid Logical Port specified. Couldn't find it any Logical Switch or Router")
+
+        to_port_info = None
+        if args.to_lport:
+            to_port_info = OVNNB_DB.lsp_get(args.to_lport).execute()
+            if not to_port_info:
+                to_port_info = OVNNB_DB.lrp_get(args.to_lport).execute()
+            if not to_port_info:
+                raise Exception("Invalid Logical Port specified. Couldn't find it any Logical Switch or Router")
+
+        func = getattr(args, 'func', None)
+        if func is None:
+            self.do_help('trace')
+            return
+        trace_slist = func(args, from_port_info, to_port_info)
+        self.poutput("'{}'".format(" && ".join(trace_slist)))
 
     port_parser = argparse.ArgumentParser(description="List Logical ports (both router and switch)")
     port_parser.add_argument('resource', nargs='?', help="Name of the switch or router")

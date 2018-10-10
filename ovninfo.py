@@ -80,6 +80,21 @@ def _get_rsrc_tunnel_key(DBIdx, rsrc_name):
     return "--"
 
 
+def _get_distributed_gw_port(PBIdx, port):
+    distributed_port = "cr-{}".format(port.name)
+    type, tunnel_key, hostname = _get_port_info_from_sb(PBIdx, distributed_port)
+    port_info = []
+    port_info.append("|->{}".format(distributed_port))
+    port_info.append(port.mac)
+    port_info.append(port.networks[0])
+    port_info.append(type)
+    port_info.append("UE--")
+    port_info.append(tunnel_key)
+    port_info.append("--")
+    port_info.append(hostname)
+    return port_info
+
+
 class Ovninfo(cmd2.Cmd):
     prompt = "ovninfo> "
 
@@ -217,11 +232,11 @@ class Ovninfo(cmd2.Cmd):
         fields = ["NAME", "MACADDR", "IPADDR", "TYPE", "UESD", "KEY", "TAG", "HOSTNAME"]
         table = self._get_pretty_table(fields)
         if args.resource:
-            rsrc = OVNNB_DB.ls_get(args.resource).execute(check_error=True)
+            rsrc = OVNNB_DB.ls_get(args.resource).execute()
             if rsrc:
                 ls_rsrc_list = [rsrc]
             else:
-                rsrc = OVNNB_DB.lr_get(args.resource).execute(check_error=True)
+                rsrc = OVNNB_DB.lr_get(args.resource).execute()
                 if rsrc:
                     lr_rsrc_list = [rsrc]
                 else:
@@ -271,6 +286,11 @@ class Ovninfo(cmd2.Cmd):
                 port_info.append("--")
                 port_info.append(hostname)
                 table.add_row(port_info)
+                if port.gateway_chassis:
+                    # add the additional gateway port chassis
+                    distributed_port = _get_distributed_gw_port(PBIdx, port)
+                    if distributed_port:
+                        table.add_row(distributed_port)
         self.poutput(str(table))
 
 

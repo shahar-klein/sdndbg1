@@ -199,13 +199,11 @@ dhcp_parser.set_defaults(func=trace_dhcp4)
 
 
 class Ovninfo(cmd2.Cmd):
-    prompt = "ovninfo> "
-
     def __init__(self):
         super(Ovninfo, self).__init__()
         self.hidden_commands.extend(['load', 'alias', 'unalias', 'edit', 'history', 'py',
                                      'pyscript', 'set', 'shell', 'shortcuts'])
-        self.prompt = "ovninfo> "
+        self.prompt = "sdndbg> "
         # try:
         #     del cmd2.Cmd.do_load
         #     del cmd2.Cmd.do_alias

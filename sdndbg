@@ -59,12 +59,15 @@ def _get_port_info_from_sb(PBIdx, port_name):
     type = None
     tunnel_key = '--'
     hostname = "--"
+    hostip = "--"
     if port_binding:
         if port_binding[0].chassis:
-            hostname = port_binding[0].chassis[0].hostname
+            chassis = port_binding[0].chassis[0]
+            hostname = chassis.hostname
+            hostip = chassis.encaps[0].ip
         type = (port_binding[0].type if port_binding[0].type else "vif")
         tunnel_key = port_binding[0].tunnel_key
-    return type, tunnel_key, hostname
+    return type, tunnel_key, hostname, hostip
 
 
 def _get_rsrc_tunnel_key(DBIdx, rsrc_name):
@@ -79,9 +82,9 @@ def _get_rsrc_tunnel_key(DBIdx, rsrc_name):
     return "--"
 
 
-def _get_distributed_gw_port(PBIdx, port):
+def _get_distributed_gw_port(args, PBIdx, port):
     distributed_port = "cr-{}".format(port.name)
-    type, tunnel_key, hostname = _get_port_info_from_sb(PBIdx, distributed_port)
+    type, tunnel_key, hostname, hostip = _get_port_info_from_sb(PBIdx, distributed_port)
     port_info = []
     port_info.append("|->{}".format(distributed_port))
     port_info.append(port.mac)
@@ -90,7 +93,10 @@ def _get_distributed_gw_port(PBIdx, port):
     port_info.append("UE--")
     port_info.append(tunnel_key)
     port_info.append("--")
-    port_info.append(hostname)
+    if args.resolve:
+        port_info.append(hostip)
+    else:
+        port_info.append(hostname)
     return port_info
 
 def trace_ip(args, from_port=None, to_port=None):
@@ -349,6 +355,7 @@ class Ovninfo(cmd2.Cmd):
         self.poutput("'{}'".format(" && ".join(trace_slist)))
 
     port_parser = argparse.ArgumentParser(description="List Logical ports (both router and switch)")
+    port_parser.add_argument("-n", dest="resolve", action='store_true', help="Do not resolve hostname")
     port_parser.add_argument('resource', nargs='?', help="Name of the switch or router")
     @cmd2.with_argparser(port_parser)
     def do_lp(self, args):
@@ -377,7 +384,7 @@ class Ovninfo(cmd2.Cmd):
                              "----", key, "--", "--"])
             for port in OVNNB_DB.lsp_list(rsrc.name).execute(check_error=True):
                 mac, ips = _get_port_mac_ip(port.addresses, port.dynamic_addresses)
-                type, key, hostname = _get_port_info_from_sb(PBIdx, port.name)
+                type, key, hostname, hostip = _get_port_info_from_sb(PBIdx, port.name)
 
                 port_info = []
                 port_info.append("|->{}".format(port.name))
@@ -393,13 +400,16 @@ class Ovninfo(cmd2.Cmd):
                 port_info.append("%s%s%s%s" % (up, enabled, secure, dhcp))
                 port_info.append(key)
                 port_info.append(port.tag[0] if port.tag else "--")
-                port_info.append(hostname)
+                if args.resolve:
+                    port_info.append(hostip)
+                else:
+                    port_info.append(hostname)
                 table.add_row(port_info)
         for rsrc in lr_rsrc_list:
             key = _get_rsrc_tunnel_key(DBIdx, rsrc.name)
             table.add_row([rsrc.name, "--", "--", "ROUTER", "----", key, "--", "--"])
             for port in OVNNB_DB.lrp_list(rsrc.name).execute(check_error=True):
-                type, key, hostname = _get_port_info_from_sb(PBIdx, port.name)
+                type, key, hostname, hostip = _get_port_info_from_sb(PBIdx, port.name)
                 port_info = []
                 port_info.append("|->{}".format(port.name))
                 port_info.append(port.mac)
@@ -409,11 +419,14 @@ class Ovninfo(cmd2.Cmd):
                 port_info.append("U%s--" % (enabled))
                 port_info.append(key)
                 port_info.append("--")
-                port_info.append(hostname)
+                if args.resolve:
+                    port_info.append(hostip)
+                else:
+                    port_info.append(hostname)
                 table.add_row(port_info)
                 if port.gateway_chassis:
                     # add the additional gateway port chassis
-                    distributed_port = _get_distributed_gw_port(PBIdx, port)
+                    distributed_port = _get_distributed_gw_port(args, PBIdx, port)
                     if distributed_port:
                         table.add_row(distributed_port)
         self.poutput(str(table))

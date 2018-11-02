@@ -16,7 +16,8 @@ from impl_idl import NGNOvnNbApiIdlImpl, NGNOvnSbApiIdlImpl, NGNOvsdbIdl
 DEBUG = False
 OVNNB_DB = None
 OVNSB_DB = None
-
+SWITCH = 'switch'
+ROUTER = 'router'
 
 def wrapColumn(args, text, width=50, separator=None):
     if args.oneline:
@@ -99,14 +100,55 @@ def _get_distributed_gw_port(args, PBIdx, port):
         port_info.append(hostname)
     return port_info
 
+def get_logical_switch(name):
+    ls_list = OVNNB_DB.ls_list().execute(check_error=True)
+    for logical_switch in ls_list:
+        if logical_switch.external_ids['ngn:subnet_name'] == name:
+            return logical_switch
+    return None
+
+def get_gateway_mac(lport):
+    lswitch = get_logical_switch(lport.external_ids['ngn:subnet_name'])
+    mac_addr = None
+    if lswitch:
+        mac_addr = lswitch.external_ids['ngn:router_mac']
+    return mac_addr
+
 def trace_ip(args, from_port=None, to_port=None):
     assert from_port is not None
-    mac, ips = _get_port_mac_ip(from_port.addresses, from_port.dynamic_addresses)
+    if from_port['type'] == SWITCH:
+        mac, ips = _get_port_mac_ip(from_port['port'].addresses,
+                                    from_port['port'].dynamic_addresses)
+    else:
+        mac = from_port['port'].mac
+        ips = from_port['port'].networks[0].split('/')[0]
+
     dst_mac = "ff:ff:ff:ff:ff:ff"
     dst_ips = "255.255.255.255"
+
     if to_port:
-        dst_mac, dst_ips = _get_port_mac_ip(to_port.addresses, to_port.dynamic_addresses)
-    trace_str = ['inport == "{}"'.format(from_port.name)]
+        if to_port['type'] == SWITCH:
+            dst_mac, dst_ips = _get_port_mac_ip(to_port['port'].addresses,
+                                                to_port['port'].dynamic_addresses)
+        else:
+            dst_mac = to_port['port'].mac
+            dst_ips = to_port['port'].networks[0].split('/')[0]
+
+        if (from_port['type'] == SWITCH) and (to_port['type'] == SWITCH):
+            if from_port['port'].external_ids['ngn:subnet_name'] != \
+                    to_port['port'].external_ids['ngn:subnet_name']:
+                dst_mac = get_gateway_mac(from_port['port'])
+        else:
+            if from_port['type'] == ROUTER:
+                dst_mac = from_port['port'].mac
+            else:
+                dst_mac = get_gateway_mac(from_port['port'])
+      
+        if dst_mac == None:
+            print("Invalid destination port")
+            return None
+
+    trace_str = ['inport == "{}"'.format(from_port['port'].name)]
     trace_str.append('eth.src == {}'.format(mac))
     trace_str.append('eth.dst == {}'.format(dst_mac))
     trace_str.append('ip4')
@@ -146,9 +188,9 @@ def trace_dhcp4(args, from_port=None, to_port=None):
 
 
 def trace_arp(args, from_port=None, to_port=None):
-    mac, ips = _get_port_mac_ip(from_port.addresses, from_port.dynamic_addresses)
+    mac, ips = _get_port_mac_ip(from_port['port'].addresses, from_port['port'].dynamic_addresses)
     dst_mac = "ff:ff:ff:ff:ff:ff"
-    trace_str = ['inport == "{}"'.format(from_port.name)]
+    trace_str = ['inport == "{}"'.format(from_port['port'].name)]
     trace_str.append('eth.src == {}'.format(mac))
     trace_str.append('eth.dst == {}'.format(dst_mac))
     trace_str.append('arp.tpa == {}'.format(args.arp_tpa))
@@ -299,7 +341,7 @@ class Ovninfo(cmd2.Cmd):
 
     def do_ls(self, args):
         """List Logical Switches"""
-        fields = ["NAME", "#PORT", "#ACL", "#DNS", "#QOS", "#LB", "TKEY"]
+        fields = ["NAME", "#PORT", "#ACL", "#DNS", "#QOS", "#LB", "TKEY", "SUBNET"]
         table = self._get_pretty_table(fields)
         DBIdx = IndexEntryClass(OVNSB_DB.idl.tables['Datapath_Binding'])
         for ls in OVNNB_DB.ls_list().execute(check_error=True):
@@ -311,6 +353,7 @@ class Ovninfo(cmd2.Cmd):
             ls_info.append(len(ls.load_balancer))
             ls_info.append(len(ls.qos_rules))
             ls_info.append(_get_rsrc_tunnel_key(DBIdx, ls.name))
+            ls_info.append(ls.other_config.get('subnet', '--'))
             table.add_row(ls_info)
         self.poutput(str(table))
 
@@ -333,18 +376,23 @@ class Ovninfo(cmd2.Cmd):
     @cmd2.with_argparser(trace_parser)
     def do_trace(self, args):
         #import pdb; pdb.set_trace();
-        from_port_info = OVNNB_DB.lsp_get(args.from_lport).execute()
-        if not from_port_info:
-            from_port_info = OVNNB_DB.lrp_get(args.from_lport).execute()
-        if not from_port_info:
+        from_port_info = {}
+        from_port_info['port'] = OVNNB_DB.lsp_get(args.from_lport).execute()
+        from_port_info['type'] = SWITCH
+        if not from_port_info['port']:
+            from_port_info['port'] = OVNNB_DB.lrp_get(args.from_lport).execute()
+            from_port_info['type'] = ROUTER
+        if not from_port_info['port']:
             raise Exception("Invalid Logical Port specified. Couldn't find it any Logical Switch or Router")
 
-        to_port_info = None
+        to_port_info = {}
         if args.to_lport:
-            to_port_info = OVNNB_DB.lsp_get(args.to_lport).execute()
-            if not to_port_info:
-                to_port_info = OVNNB_DB.lrp_get(args.to_lport).execute()
-            if not to_port_info:
+            to_port_info['port'] = OVNNB_DB.lsp_get(args.to_lport).execute()
+            to_port_info['type'] = SWITCH
+            if not to_port_info['port']:
+                to_port_info['port'] = OVNNB_DB.lrp_get(args.to_lport).execute()
+                to_port_info['type'] = ROUTER
+            if not to_port_info['port']:
                 raise Exception("Invalid Logical Port specified. Couldn't find it any Logical Switch or Router")
 
         func = getattr(args, 'func', None)
@@ -352,6 +400,8 @@ class Ovninfo(cmd2.Cmd):
             self.do_help('trace')
             return
         trace_slist = func(args, from_port_info, to_port_info)
+        if trace_slist == None:
+            raise Exception("Invalid Logical Ports specified")
         self.poutput("'{}'".format(" && ".join(trace_slist)))
 
     port_parser = argparse.ArgumentParser(description="List Logical ports (both router and switch)")

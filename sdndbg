@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.6
 
 import argparse
 import cmd2
@@ -12,10 +12,13 @@ from ovs.db.custom_index import  IndexEntryClass
 from ovsdbapp.backend.ovs_idl import connection
 from ovsdbapp.backend.ovs_idl import idlutils
 from impl_idl import NGNOvnNbApiIdlImpl, NGNOvnSbApiIdlImpl, NGNOvsdbIdl
+from ovsdbapp.schema.open_vswitch import impl_idl as ovs_impl_idl
+
 
 DEBUG = False
 OVNNB_DB = None
 OVNSB_DB = None
+OVSDB_IDL = None
 SWITCH = 'switch'
 ROUTER = 'router'
 
@@ -208,43 +211,64 @@ def trace_tcp(args, from_port=None, to_port=None):
         trace_str.append('tcp.dst == {}'.format(args.dport))
     return trace_str
 
+ovn_parser = argparse.ArgumentParser(prog='ovn')
+ovn_subparsers = ovn_parser.add_subparsers(title='sub-commands', help='Ovninfo utility for sdndbg')
+
 # trace command parser
-trace_parser = argparse.ArgumentParser(description="Trace packet flow based on OVNSB Logical Flows")
+trace_parser = ovn_subparsers.add_parser('trace', help="Trace packet flow based on OVN basedLogical Flows")
 trace_parser.add_argument('--from', dest='from_lport', required=True, help="Specify the source logical port")
 trace_parser.add_argument('--to', dest='to_lport', help="Specify the destination logical port")
 trace_subparsers = trace_parser.add_subparsers(title='Subcommands', description='Supported protocols')
 
 ip_parser = trace_subparsers.add_parser('ip4', help="Trace IPv4 packet")
 ip_parser.add_argument('--ttl', type=int, default=32)
-ip_parser.set_defaults(func=trace_ip)
+ip_parser.set_defaults(func_trace=trace_ip)
 
 udp_parser = trace_subparsers.add_parser('udp', help="Trace UDP packet")
 udp_parser.add_argument('--ttl', type=int, default=32)
 udp_parser.add_argument('--src', dest='sport', type=int, help="Source UDP port")
 udp_parser.add_argument('--dst', dest='dport', type=int, help="Destination UDP port")
-udp_parser.set_defaults(func=trace_udp)
+udp_parser.set_defaults(func_trace=trace_udp)
 
 tcp_parser = trace_subparsers.add_parser('tcp', help="Trace TCP packet", )
 tcp_parser.add_argument('--ttl', type=int, default=32)
 tcp_parser.add_argument('--src', dest='sport', type=int, help="Source TCP port")
 tcp_parser.add_argument('--dst', dest='dport', type=int, help="Destination TCP port")
-tcp_parser.set_defaults(func=trace_tcp)
+tcp_parser.set_defaults(func_trace=trace_tcp)
 
 icmp4_parser = trace_subparsers.add_parser('icmp4', help="Trace ICMP4 packet")
 icmp4_parser.add_argument('--ttl', type=int, default=32)
 icmp4_parser.add_argument('--type', dest='icmp_type', type=int, help="ICMP4 type")
 icmp4_parser.add_argument('--code', dest='icmp_code', type=int, help="ICMP4 code")
-icmp4_parser.set_defaults(func=trace_icmp4)
+icmp4_parser.set_defaults(func_trace=trace_icmp4)
 
 arp_parser = trace_subparsers.add_parser('arp', help="Trace ARP packet")
 arp_parser.add_argument('--op', dest='arp_op', type=int, help='ARP operation')
 arp_parser.add_argument('--tpa', dest='arp_tpa', type=int, help='ARP Target protocol address')
-arp_parser.set_defaults(func=trace_arp)
+arp_parser.set_defaults(func_trace=trace_arp)
 
 dhcp_parser = trace_subparsers.add_parser('dhcp4', help="Trace DHCP packet")
 dhcp_parser.add_argument('--ttl', type=int, default=32)
-dhcp_parser.set_defaults(func=trace_dhcp4)
+dhcp_parser.set_defaults(func_trace=trace_dhcp4)
 
+ls_parser = ovn_subparsers.add_parser('ls', help="List logical switches of ovn")
+status_parser = ovn_subparsers.add_parser('status', help="List logical switches of ovn")
+lr_parser = ovn_subparsers.add_parser('lr', help="List logical routers of ovn")
+list_parser = ovn_subparsers.add_parser('list', help="List logical routers/switches of ovn")
+
+
+port_parser = ovn_subparsers.add_parser('lp', help="List Logical ports (both router and switch)")
+port_parser.add_argument("-n", dest="resolve", action='store_true', help="Do not resolve hostname")
+port_parser.add_argument('resource', nargs='?', help="Name of the switch or router")
+
+ovs_parser = argparse.ArgumentParser(prog='ovs')
+ovs_subparsers = ovs_parser.add_subparsers(title='sub-commands', help='Ovsinfo utility for sdndbg')
+
+show_ports_parser = ovs_subparsers.add_parser('show-ports', help="show OVS ports")
+show_ports_parser.add_argument('name', nargs='?', help='the name of the OVS bridge')
+
+show_portstats_parser = ovs_subparsers.add_parser('show-portstat', help="show OVS port statistics")
+show_portstats_parser.add_argument('name', nargs='?', help='the name of the OVS bridge')
 
 class Ovninfo(cmd2.Cmd):
     def __init__(self):
@@ -252,19 +276,6 @@ class Ovninfo(cmd2.Cmd):
         self.hidden_commands.extend(['load', 'alias', 'unalias', 'edit', 'history', 'py',
                                      'pyscript', 'set', 'shell', 'shortcuts'])
         self.prompt = "sdndbg> "
-        # try:
-        #     del cmd2.Cmd.do_load
-        #     del cmd2.Cmd.do_alias
-        #     del cmd2.Cmd.do_unalias
-        #     del cmd2.Cmd.do_edit
-        #     del cmd2.Cmd.do_history
-        #     del cmd2.Cmd.do_py
-        #     del cmd2.Cmd.do_pyscript
-        #     del cmd2.Cmd.do_set
-        #     del cmd2.Cmd.do_shell
-        #     del cmd2.Cmd.do_shortcuts
-        # except AttributeError:
-        #     pass
 
     def _get_pretty_table(self, fields):
         table = prettytable.PrettyTable(fields)
@@ -274,7 +285,56 @@ class Ovninfo(cmd2.Cmd):
         table.align = 'l'
         return table
 
-    def do_status(self, args):
+    def ovn_trace(self, args):
+        from_port_info = {}
+        from_port_info['port'] = OVNNB_DB.lsp_get(args.from_lport).execute()
+        from_port_info['type'] = SWITCH
+        if not from_port_info['port']:
+            from_port_info['port'] = OVNNB_DB.lrp_get(args.from_lport).execute()
+            from_port_info['type'] = ROUTER
+        if not from_port_info['port']:
+            raise Exception("Invalid Logical Port specified. Couldn't find it any Logical Switch or Router")
+
+        to_port_info = {}
+        if args.to_lport:
+            to_port_info['port'] = OVNNB_DB.lsp_get(args.to_lport).execute()
+            to_port_info['type'] = SWITCH
+            if not to_port_info['port']:
+                to_port_info['port'] = OVNNB_DB.lrp_get(args.to_lport).execute()
+                to_port_info['type'] = ROUTER
+            if not to_port_info['port']:
+                raise Exception("Invalid Logical Port specified. Couldn't find it any Logical Switch or Router")
+
+        func = getattr(args, 'func_trace', None)
+        if func is None:
+            self.do_help('ovn trace')
+            return
+        trace_slist = func(args, from_port_info, to_port_info)
+        if trace_slist == None:
+            raise Exception("Invalid Logical Ports specified")
+        self.poutput("'{}'".format(" && ".join(trace_slist)))
+    trace_parser.set_defaults(func=ovn_trace)
+
+    def ovn_ls(self, args):
+        """List Logical Switches"""
+        fields = ["NAME", "#PORT", "#ACL", "#DNS", "#QOS", "#LB", "TKEY", "SUBNET"]
+        table = self._get_pretty_table(fields)
+        DBIdx = IndexEntryClass(OVNSB_DB.idl.tables['Datapath_Binding'])
+        for ls in OVNNB_DB.ls_list().execute(check_error=True):
+            ls_info = []
+            ls_info.append(ls.name)
+            ls_info.append(len(ls.ports))
+            ls_info.append(len(ls.acls))
+            ls_info.append(len(ls.dns_records))
+            ls_info.append(len(ls.load_balancer))
+            ls_info.append(len(ls.qos_rules))
+            ls_info.append(_get_rsrc_tunnel_key(DBIdx, ls.name))
+            ls_info.append(ls.other_config.get('subnet', '--'))
+            table.add_row(ls_info)
+        self.poutput(str(table))
+    ls_parser.set_defaults(func=ovn_ls)
+
+    def ovn_status(self, args):
         """Show OVN NB/SB Status"""
         rec = OVNNB_DB.nb_global()
         self.poutput("NorthBound Sequence Number: {}".format(rec.nb_cfg))
@@ -306,8 +366,9 @@ class Ovninfo(cmd2.Cmd):
         self.poutput("Total number of Logical ports in NorthBound: {}".format(nLSP + nLRP))
         nLP = len(OVNSB_DB.tables['Port_Binding'].rows.values())
         self.poutput("Total number of Logical ports in SouthBound: {}".format(nLP))
+    status_parser.set_defaults(func=ovn_status)
 
-    def do_list(self, args):
+    def ovn_list(self, args):
         """List all Logical Switches and Routers"""
         fields = ["NAME", "TYPE", "#PORT", "#ACL", "#DNS", "#QOS", "#LB", "#NAT", "#RT", "TKEY"]
         table = self._get_pretty_table(fields)
@@ -338,26 +399,9 @@ class Ovninfo(cmd2.Cmd):
             lr_info.append(_get_rsrc_tunnel_key(DBIdx, lr.name))
             table.add_row(lr_info)
         self.poutput(str(table))
+    list_parser.set_defaults(func=ovn_list)
 
-    def do_ls(self, args):
-        """List Logical Switches"""
-        fields = ["NAME", "#PORT", "#ACL", "#DNS", "#QOS", "#LB", "TKEY", "SUBNET"]
-        table = self._get_pretty_table(fields)
-        DBIdx = IndexEntryClass(OVNSB_DB.idl.tables['Datapath_Binding'])
-        for ls in OVNNB_DB.ls_list().execute(check_error=True):
-            ls_info = []
-            ls_info.append(ls.name)
-            ls_info.append(len(ls.ports))
-            ls_info.append(len(ls.acls))
-            ls_info.append(len(ls.dns_records))
-            ls_info.append(len(ls.load_balancer))
-            ls_info.append(len(ls.qos_rules))
-            ls_info.append(_get_rsrc_tunnel_key(DBIdx, ls.name))
-            ls_info.append(ls.other_config.get('subnet', '--'))
-            table.add_row(ls_info)
-        self.poutput(str(table))
-
-    def do_lr(self, args):
+    def ovn_lr(self, args):
         """List Logical Routers"""
         fields = ["NAME", "#PORT", "#LB", "#NAT", "#RT", "TKEY"]
         table = self._get_pretty_table(fields)
@@ -372,43 +416,9 @@ class Ovninfo(cmd2.Cmd):
             lr_info.append(_get_rsrc_tunnel_key(DBIdx, lr.name))
             table.add_row(lr_info)
         self.poutput(str(table))
+    lr_parser.set_defaults(func=ovn_lr)
 
-    @cmd2.with_argparser(trace_parser)
-    def do_trace(self, args):
-        #import pdb; pdb.set_trace();
-        from_port_info = {}
-        from_port_info['port'] = OVNNB_DB.lsp_get(args.from_lport).execute()
-        from_port_info['type'] = SWITCH
-        if not from_port_info['port']:
-            from_port_info['port'] = OVNNB_DB.lrp_get(args.from_lport).execute()
-            from_port_info['type'] = ROUTER
-        if not from_port_info['port']:
-            raise Exception("Invalid Logical Port specified. Couldn't find it any Logical Switch or Router")
-
-        to_port_info = {}
-        if args.to_lport:
-            to_port_info['port'] = OVNNB_DB.lsp_get(args.to_lport).execute()
-            to_port_info['type'] = SWITCH
-            if not to_port_info['port']:
-                to_port_info['port'] = OVNNB_DB.lrp_get(args.to_lport).execute()
-                to_port_info['type'] = ROUTER
-            if not to_port_info['port']:
-                raise Exception("Invalid Logical Port specified. Couldn't find it any Logical Switch or Router")
-
-        func = getattr(args, 'func', None)
-        if func is None:
-            self.do_help('trace')
-            return
-        trace_slist = func(args, from_port_info, to_port_info)
-        if trace_slist == None:
-            raise Exception("Invalid Logical Ports specified")
-        self.poutput("'{}'".format(" && ".join(trace_slist)))
-
-    port_parser = argparse.ArgumentParser(description="List Logical ports (both router and switch)")
-    port_parser.add_argument("-n", dest="resolve", action='store_true', help="Do not resolve hostname")
-    port_parser.add_argument('resource', nargs='?', help="Name of the switch or router")
-    @cmd2.with_argparser(port_parser)
-    def do_lp(self, args):
+    def ovn_lp(self, args):
         lr_rsrc_list = []
         ls_rsrc_list = []
         fields = ["NAME", "MACADDR", "IPADDR", "TYPE", "UESD", "KEY", "TAG", "HOSTNAME"]
@@ -480,7 +490,94 @@ class Ovninfo(cmd2.Cmd):
                     if distributed_port:
                         table.add_row(distributed_port)
         self.poutput(str(table))
+    port_parser.set_defaults(func=ovn_lp)
 
+    @cmd2.with_argparser(ovn_parser)
+    def do_ovn(self, args):
+        """Ovninfo utility for sdndbg"""
+        ovnnb_db = os.getenv("OVN_NB_DB", "unix:/var/run/openvswitch/ovnnb_db.sock")
+        ovnsb_db = os.getenv("OVN_SB_DB", "unix:/var/run/openvswitch/ovnsb_db.sock")
+
+        get_nb_connection(ovnnb_db)
+        get_sb_connection(ovnsb_db)
+
+        func = getattr(args, 'func', None)
+        if func is None:
+            self.do_help('ovn')
+            return
+        else:
+            func(self, args)
+
+    def ovs_show_ports(self, args):
+        bridges = OVSDB_IDL.list_br().execute()
+        if args.name:
+            intersection = set([args.name]).intersection(set(bridges))
+            if not intersection:
+                raise CLIError("specified bridge %s doesn't exist" % argv[1])
+            bridges = list(intersection)
+        fields = ["NAME", "MAC", "AMAC", "IP", "OFPORT", "DPPORT", "MTU", "POD"]
+        table = self._get_pretty_table(fields)
+        for bridge in bridges:
+            table.add_row([bridge, "--", "--", "--", "--", "--", "--", "--"])
+            # get the bridge row
+            bridgeRow = idlutils.row_by_value(OVSDB_IDL, 'Bridge', 'name', bridge)
+            port_data = []
+            for port in bridgeRow.ports:
+                dpport = "--"
+                port_name = "|->%s" % (port.name)
+                ip_address = "--"
+                interface = port.interfaces[0]
+                mac_in_use = interface.mac_in_use[0] if interface.mac_in_use else '--'
+                ofport = interface.ofport[0] if interface.ofport else '--'
+                mtu = interface.mtu[0] if interface.mtu else '--'
+                port_info = [port_name, mac_in_use, interface.external_ids.get('attached_mac', "--"),
+                            ip_address, ofport, dpport, mtu,
+                            interface.external_ids.get('iface-id', '--')]
+                port_data.append(port_info)
+            # sort all the ports by ofport number
+            port_data.sort(key=lambda x: x[4])
+            for row in port_data:
+            	table.add_row(row)
+        self.poutput(str(table))
+    show_ports_parser.set_defaults(func=ovs_show_ports)
+        
+    def ovs_show_portstat(self, args):
+        bridges = OVSDB_IDL.list_br().execute()
+        if args.name:
+            intersection = set([args.name]).intersection(set(bridges))
+            if not intersection:
+                raise CLIError("specified bridge %s doesn't exist" % argv[1])
+            bridges = list(intersection)
+        fields = ["NAME", "RX", "RX_ERROR", "RX_DROP", "TX", "TX_ERROR", "TX_DROP"]
+        table = self._get_pretty_table(fields)
+        for bridge in bridges:
+            table.add_row([bridge, "--", "--", "--", "--", "--", "--"])
+            # get the bridge row
+            bridgeRow = idlutils.row_by_value(OVSDB_IDL, 'Bridge', 'name', bridge)
+            for port in bridgeRow.ports:
+                interface = port.interfaces[0]
+                port_info = {}
+                port_info.update(interface.statistics)
+                port_info["name"] = "|->%s" % (port.name)
+                table.add_row([port_info[key] if port_info.get(key) else "--"
+                                for key in ["name", "rx_packets", "rx_errors",
+                                            "rx_dropped", "tx_packets",
+                                            "tx_errors", "tx_dropped"]])
+        self.poutput(str(table))
+    show_portstats_parser.set_defaults(func=ovs_show_portstat)
+    
+    @cmd2.with_argparser(ovs_parser)
+    def do_ovs(self, args):
+        """Ovsinfo utility for sdndbg"""
+        ovs_db = os.getenv("OVS_DB", "unix:/var/run/openvswitch/db.sock")
+        get_ovsdb_connection(ovs_db)
+
+        func = getattr(args, 'func', None)
+        if func is None:
+            self.do_help('ovs')
+            return
+        else:
+            func(self, args)
 
 def setup_logging(logging_level):
     LOG_FORMATTER_STR = "%(asctime)s %(levelname)s %(name)s - %(message)s"
@@ -520,6 +617,17 @@ def get_sb_connection(ovnsb_db):
     OVNSB_DB = NGNOvnSbApiIdlImpl(connection.Connection(idl, 30))
     return OVNSB_DB
 
+def get_ovsdb_connection(ovs_db):
+    global OVSDB_IDL
+    if OVSDB_IDL:
+        return OVSDB_IDL
+
+    ovsdb_connection = os.getenv("OVSDB_PATH")   
+    timeout = os.getenv("OVSDB_TIMEOUT")
+    if not timeout:
+        ovsdb_timeout = "30"
+    idl = connection.OvsdbIdl.from_server(ovs_db, "Open_vSwitch")
+    OVSDB_IDL = ovs_impl_idl.OvsdbIdl(connection.Connection(idl, int(ovsdb_timeout)))
 
 class CustomHelpAction(argparse._HelpAction):
     def __call__(self, parser, namespace, values, option_string=None):
@@ -559,10 +667,6 @@ def main():
         logging_level = logging.DEBUG
         DEBUG = True
     setup_logging(logging_level)
-    ovnnb_db = os.getenv("OVN_NB_DB", "unix:/var/run/openvswitch/ovnnb_db.sock")
-    ovnsb_db = os.getenv("OVN_SB_DB", "unix:/var/run/openvswitch/ovnsb_db.sock")
-    get_nb_connection(ovnnb_db)
-    get_sb_connection(ovnsb_db)
 
     if unknown_args:
         unknown_args = [" ".join(unknown_args), "quit"]

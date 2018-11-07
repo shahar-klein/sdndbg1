@@ -524,9 +524,9 @@ class Ovninfo(cmd2.Cmd):
         if args.name:
             intersection = set([args.name]).intersection(set(bridges))
             if not intersection:
-                raise CLIError("specified bridge %s doesn't exist" % argv[1])
+                raise Exception("specified bridge %s doesn't exist" % args.name)
             bridges = list(intersection)
-        fields = ["NAME", "MAC", "AMAC", "IP", "OFPORT", "DPPORT", "MTU", "POD"]
+        fields = ["NAME", "MAC", "AMAC", "IP", "OFPORT", "DPPORT", "MTU", "LPNAME"]
         table = self._get_pretty_table(fields)
         for bridge in bridges:
             table.add_row([bridge, "--", "--", "--", "--", "--", "--", "--"])
@@ -558,7 +558,7 @@ class Ovninfo(cmd2.Cmd):
         if args.name:
             intersection = set([args.name]).intersection(set(bridges))
             if not intersection:
-                raise CLIError("specified bridge %s doesn't exist" % argv[1])
+                raise Exception("specified bridge %s doesn't exist" % args.name)
             bridges = list(intersection)
         fields = ["NAME", "RX", "RX_ERROR", "RX_DROP", "TX", "TX_ERROR", "TX_DROP"]
         table = self._get_pretty_table(fields)
@@ -637,9 +637,8 @@ def get_ovsdb_connection(ovs_db):
     if OVSDB_IDL:
         return OVSDB_IDL
 
-    ovsdb_connection = os.getenv("OVSDB_PATH")
-    timeout = os.getenv("OVSDB_TIMEOUT")
-    if not timeout:
+    ovsdb_timeout = os.getenv("OVSDB_TIMEOUT")
+    if not ovsdb_timeout:
         ovsdb_timeout = "30"
     idl = connection.OvsdbIdl.from_server(ovs_db, "Open_vSwitch")
     OVSDB_IDL = ovs_impl_idl.OvsdbIdl(connection.Connection(idl, int(ovsdb_timeout)))

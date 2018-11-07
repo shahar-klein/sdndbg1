@@ -119,6 +119,15 @@ def get_gateway_mac(lport):
         mac_addr = lswitch.external_ids['ngn:router_mac']
     return mac_addr
 
+def get_bridges(args):
+   bridges = OVSDB_IDL.list_br().execute()
+   if args.name:
+        intersection = set([args.name]).intersection(set(bridges))
+        if not intersection:
+            raise Exception("specified bridge %s doesn't exist" % args.name)
+        bridges = list(intersection)
+
+   return bridges
 
 def trace_ip(args, from_port=None, to_port=None):
     assert from_port is not None
@@ -270,9 +279,7 @@ ovs_subparsers = ovs_parser.add_subparsers(title='sub-commands', help='Ovsinfo u
 
 show_ports_parser = ovs_subparsers.add_parser('show-ports', help="show OVS ports")
 show_ports_parser.add_argument('name', nargs='?', help='the name of the OVS bridge')
-
-show_portstats_parser = ovs_subparsers.add_parser('show-portstat', help="show OVS port statistics")
-show_portstats_parser.add_argument('name', nargs='?', help='the name of the OVS bridge')
+show_ports_parser.add_argument('-s', dest="stats", action='store_true')
 
 
 class Ovninfo(cmd2.Cmd):
@@ -519,14 +526,8 @@ class Ovninfo(cmd2.Cmd):
         else:
             func(self, args)
 
-    def ovs_show_ports(self, args):
-        bridges = OVSDB_IDL.list_br().execute()
-        if args.name:
-            intersection = set([args.name]).intersection(set(bridges))
-            if not intersection:
-                raise Exception("specified bridge %s doesn't exist" % args.name)
-            bridges = list(intersection)
-        fields = ["NAME", "MAC", "AMAC", "IP", "OFPORT", "DPPORT", "MTU", "LPNAME"]
+    def get_ports(self, bridges):
+        fields = ["NAME", "MAC", "AMAC", "IP", "OFPORT", "DPPORT", "MTU", "POD"]
         table = self._get_pretty_table(fields)
         for bridge in bridges:
             table.add_row([bridge, "--", "--", "--", "--", "--", "--", "--"])
@@ -542,24 +543,16 @@ class Ovninfo(cmd2.Cmd):
                 ofport = interface.ofport[0] if interface.ofport else '--'
                 mtu = interface.mtu[0] if interface.mtu else '--'
                 port_info = [port_name, mac_in_use, interface.external_ids.get('attached_mac', "--"),
-                             ip_address, ofport, dpport, mtu,
-                             interface.external_ids.get('iface-id', '--')]
+                            ip_address, ofport, dpport, mtu,
+                            interface.external_ids.get('iface-id', '--')]
                 port_data.append(port_info)
             # sort all the ports by ofport number
             port_data.sort(key=lambda x: x[4])
             for row in port_data:
-                table.add_row(row)
+            	table.add_row(row)
         self.poutput(str(table))
 
-    show_ports_parser.set_defaults(func=ovs_show_ports)
-
-    def ovs_show_portstat(self, args):
-        bridges = OVSDB_IDL.list_br().execute()
-        if args.name:
-            intersection = set([args.name]).intersection(set(bridges))
-            if not intersection:
-                raise Exception("specified bridge %s doesn't exist" % args.name)
-            bridges = list(intersection)
+    def get_portstat(self, bridges):
         fields = ["NAME", "RX", "RX_ERROR", "RX_DROP", "TX", "TX_ERROR", "TX_DROP"]
         table = self._get_pretty_table(fields)
         for bridge in bridges:
@@ -572,12 +565,19 @@ class Ovninfo(cmd2.Cmd):
                 port_info.update(interface.statistics)
                 port_info["name"] = "|->%s" % (port.name)
                 table.add_row([port_info[key] if port_info.get(key) else "--"
-                               for key in ["name", "rx_packets", "rx_errors",
-                                           "rx_dropped", "tx_packets",
-                                           "tx_errors", "tx_dropped"]])
+                                for key in ["name", "rx_packets", "rx_errors",
+                                            "rx_dropped", "tx_packets",
+                                            "tx_errors", "tx_dropped"]])
         self.poutput(str(table))
 
-    show_portstats_parser.set_defaults(func=ovs_show_portstat)
+    def ovs_show_ports(self, args):
+        bridges = get_bridges(args)
+        if args.stats:
+            self.get_portstat(bridges)
+        else:
+            self.get_ports(bridges)
+
+    show_ports_parser.set_defaults(func=ovs_show_ports)
 
     @cmd2.with_argparser(ovs_parser)
     def do_ovs(self, args):
@@ -643,36 +643,8 @@ def get_ovsdb_connection(ovs_db):
     idl = connection.OvsdbIdl.from_server(ovs_db, "Open_vSwitch")
     OVSDB_IDL = ovs_impl_idl.OvsdbIdl(connection.Connection(idl, int(ovsdb_timeout)))
 
-
-class CustomHelpAction(argparse._HelpAction):
-    def __call__(self, parser, namespace, values, option_string=None):
-        help_output = """
-    usage: ovninfo -h
-           ovninfo help <subcommand>
-           ovninfo [-d] <subcommand>
-
-    ovninfo without any arguments ends up in an interactive shell where one can type
-    any of the following subcommands one at a time.
-
-    Global arguments:
-      -h, --help            show this help message and exit
-      -d, --debug           enable client side debugging
-
-    Subcommands:
-        status
-        list
-        lp
-        ls
-        lr
-        """
-        print(help_output)
-        parser.exit()
-
-
 def main():
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument('-h', '--help', action=CustomHelpAction,
-                        help="show this help message and exit")
     parser.add_argument('-d', '--debug', action='store_true', help="enable client side debugging")
     args, unknown_args = parser.parse_known_args()
 

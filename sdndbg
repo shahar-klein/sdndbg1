@@ -104,66 +104,67 @@ def _get_distributed_gw_port(args, PBIdx, port):
     return port_info
 
 
-def get_logical_switch(name):
-    ls_list = OVNNB_DB.ls_list().execute(check_error=True)
-    for logical_switch in ls_list:
-        if logical_switch.external_ids['ngn:subnet_name'] == name:
-            return logical_switch
+def get_gateway_mac(lswitch_name):
+    lsp_list = OVNNB_DB.lsp_list(lswitch_name).execute(check_error=True)
+    for lsp in lsp_list:
+        if lsp.type == "router":
+            return lsp.addresses[0]
     return None
 
 
-def get_gateway_mac(lport):
-    lswitch = get_logical_switch(lport.external_ids['ngn:subnet_name'])
-    mac_addr = None
-    if lswitch:
-        mac_addr = lswitch.external_ids['ngn:router_mac']
-    return mac_addr
-
 def get_bridges(args):
-   bridges = OVSDB_IDL.list_br().execute()
-   if args.name:
+    bridges = OVSDB_IDL.list_br().execute()
+    if args.name:
         intersection = set([args.name]).intersection(set(bridges))
         if not intersection:
             raise Exception("specified bridge %s doesn't exist" % args.name)
         bridges = list(intersection)
 
-   return bridges
+    return bridges
 
-def trace_ip(args, from_port=None, to_port=None):
-    assert from_port is not None
-    if from_port['type'] == SWITCH:
-        mac, ips = _get_port_mac_ip(from_port['port'].addresses,
-                                    from_port['port'].dynamic_addresses)
+
+def trace_ip(args, from_port_info=None, to_port_info=None):
+    assert from_port_info is not None
+    from_port = from_port_info['port']
+    if from_port_info['type'] == SWITCH:
+        mac, ips = _get_port_mac_ip(from_port_info['port'].addresses,
+                                    from_port_info['port'].dynamic_addresses)
     else:
-        mac = from_port['port'].mac
-        ips = from_port['port'].networks[0].split('/')[0]
+        mac = from_port.mac
+        ips = from_port.networks[0].split('/')[0]
 
     dst_mac = "ff:ff:ff:ff:ff:ff"
     dst_ips = "255.255.255.255"
 
-    if to_port:
-        if to_port['type'] == SWITCH:
-            dst_mac, dst_ips = _get_port_mac_ip(to_port['port'].addresses,
-                                                to_port['port'].dynamic_addresses)
+    if to_port_info:
+        to_port = to_port_info['port']
+        if to_port_info['type'] == SWITCH:
+            dst_mac, dst_ips = _get_port_mac_ip(to_port.addresses,
+                                                to_port.dynamic_addresses)
         else:
-            dst_mac = to_port['port'].mac
-            dst_ips = to_port['port'].networks[0].split('/')[0]
+            dst_mac = to_port.mac
+            dst_ips = to_port.networks[0].split('/')[0]
 
-        if (from_port['type'] == SWITCH) and (to_port['type'] == SWITCH):
-            if from_port['port'].external_ids['ngn:subnet_name'] != \
-                    to_port['port'].external_ids['ngn:subnet_name']:
-                dst_mac = get_gateway_mac(from_port['port'])
+        from_port_ls = from_port.external_ids.get('ngn:subnet_name')
+        if not from_port_ls:
+            from_port_ls = from_port.external_ids.get('logical_switch')
+        to_port_ls = to_port.external_ids.get('ngn:subnet_name')
+        if not to_port_ls:
+            to_port_ls = to_port.external_ids.get('logical_switch')
+        if from_port_info['type'] == SWITCH and to_port_info['type'] == SWITCH:
+            if from_port_ls != to_port_ls:
+                dst_mac = get_gateway_mac(from_port_ls)
         else:
-            if from_port['type'] == ROUTER:
-                dst_mac = from_port['port'].mac
+            if from_port_info['type'] == ROUTER:
+                dst_mac = from_port.mac
             else:
-                dst_mac = get_gateway_mac(from_port['port'])
+                dst_mac = get_gateway_mac(from_port_ls)
 
-        if dst_mac == None:
+        if dst_mac is None:
             print("Invalid destination port")
             return None
 
-    trace_str = ['inport == "{}"'.format(from_port['port'].name)]
+    trace_str = ['inport == "{}"'.format(from_port.name)]
     trace_str.append('eth.src == {}'.format(mac))
     trace_str.append('eth.dst == {}'.format(dst_mac))
     trace_str.append('ip4')
@@ -339,8 +340,8 @@ class Ovninfo(cmd2.Cmd):
             ls_info.append(len(ls.ports))
             ls_info.append(len(ls.acls))
             ls_info.append(len(ls.dns_records))
-            ls_info.append(len(ls.load_balancer))
             ls_info.append(len(ls.qos_rules))
+            ls_info.append(len(ls.load_balancer))
             ls_info.append(_get_rsrc_tunnel_key(DBIdx, ls.name))
             ls_info.append(ls.other_config.get('subnet', '--'))
             table.add_row(ls_info)
@@ -543,13 +544,13 @@ class Ovninfo(cmd2.Cmd):
                 ofport = interface.ofport[0] if interface.ofport else '--'
                 mtu = interface.mtu[0] if interface.mtu else '--'
                 port_info = [port_name, mac_in_use, interface.external_ids.get('attached_mac', "--"),
-                            ip_address, ofport, dpport, mtu,
-                            interface.external_ids.get('iface-id', '--')]
+                             ip_address, ofport, dpport, mtu,
+                             interface.external_ids.get('iface-id', '--')]
                 port_data.append(port_info)
             # sort all the ports by ofport number
             port_data.sort(key=lambda x: x[4])
             for row in port_data:
-            	table.add_row(row)
+                table.add_row(row)
         self.poutput(str(table))
 
     def get_portstat(self, bridges):
@@ -565,9 +566,9 @@ class Ovninfo(cmd2.Cmd):
                 port_info.update(interface.statistics)
                 port_info["name"] = "|->%s" % (port.name)
                 table.add_row([port_info[key] if port_info.get(key) else "--"
-                                for key in ["name", "rx_packets", "rx_errors",
-                                            "rx_dropped", "tx_packets",
-                                            "tx_errors", "tx_dropped"]])
+                               for key in ["name", "rx_packets", "rx_errors",
+                                           "rx_dropped", "tx_packets",
+                                           "tx_errors", "tx_dropped"]])
         self.poutput(str(table))
 
     def ovs_show_ports(self, args):
@@ -642,6 +643,7 @@ def get_ovsdb_connection(ovs_db):
         ovsdb_timeout = "30"
     idl = connection.OvsdbIdl.from_server(ovs_db, "Open_vSwitch")
     OVSDB_IDL = ovs_impl_idl.OvsdbIdl(connection.Connection(idl, int(ovsdb_timeout)))
+
 
 def main():
     parser = argparse.ArgumentParser(add_help=False)

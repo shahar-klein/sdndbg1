@@ -267,7 +267,7 @@ dhcp_parser.add_argument('--ttl', type=int, default=32)
 dhcp_parser.set_defaults(func_trace=trace_dhcp4)
 
 ls_parser = ovn_subparsers.add_parser('ls', help="List logical switches of ovn")
-status_parser = ovn_subparsers.add_parser('status', help="List logical switches of ovn")
+status_parser = ovn_subparsers.add_parser('status', help="Show OVN’s overall status and chassis info")
 lr_parser = ovn_subparsers.add_parser('lr', help="List logical routers of ovn")
 list_parser = ovn_subparsers.add_parser('list', help="List logical routers/switches of ovn")
 
@@ -357,13 +357,17 @@ class Ovninfo(cmd2.Cmd):
         self.poutput("Hypervisor Sequence Number: {}".format(rec.hv_cfg))
         self.poutput("Hypervisor Information")
 
-        fields = ["HOSTNAME", "IP", "NBCFG", "SYSTEMID", "MAPPINGS", "D"]
+        fields = ["HOSTNAME", "IP", "NPORTS", "NBCFG", "SYSTEMID", "MAPPINGS", "D"]
         table = self._get_pretty_table(fields)
+
         for chassis in OVNSB_DB.chassis_list().execute():
             chassis_info = []
             chassis_info.append(chassis.hostname)
             encap = chassis.encaps[0]
             chassis_info.append(encap.ip)
+            conditions = ("chassis", "=", chassis.uuid)
+            port_count = len(OVNSB_DB.db_find("Port_Binding", conditions, row="_uuid").execute(check_error=True))
+            chassis_info.append(port_count)
             chassis_info.append(chassis.nb_cfg)
             chassis_info.append(chassis.name)
             chassis_info.append(chassis.external_ids.get("ovn-bridge-mappings", "--"))
@@ -456,6 +460,7 @@ class Ovninfo(cmd2.Cmd):
             lr_rsrc_list = OVNNB_DB.lr_list().execute(check_error=True)
         PBIdx = IndexEntryClass(OVNSB_DB.idl.tables['Port_Binding'])
         DBIdx = IndexEntryClass(OVNSB_DB.idl.tables['Datapath_Binding'])
+
         for rsrc in ls_rsrc_list:
             key = _get_rsrc_tunnel_key(DBIdx, rsrc.name)
             table.add_row([rsrc.name, "--", rsrc.other_config.get("subnet", "--"), "SWITCH",
@@ -466,7 +471,7 @@ class Ovninfo(cmd2.Cmd):
 
                 port_info = []
                 port_info.append("|->{}".format(port.name))
-                port_info.append(mac)
+                port_info.append(mac.lower())
                 port_info.append(ips if ips else "--")
                 if not type:
                     type = (port.type if port.type else "--")
@@ -490,7 +495,7 @@ class Ovninfo(cmd2.Cmd):
                 type, key, hostname, hostip = _get_port_info_from_sb(PBIdx, port.name)
                 port_info = []
                 port_info.append("|->{}".format(port.name))
-                port_info.append(port.mac)
+                port_info.append(port.mac.lower())
                 port_info.append(port.networks[0])
                 port_info.append(type)
                 enabled = "E" if all(port.enabled) else "-"
@@ -566,9 +571,9 @@ class Ovninfo(cmd2.Cmd):
                 port_info.update(interface.statistics)
                 port_info["name"] = "|->%s" % (port.name)
                 table.add_row([port_info[key] if port_info.get(key) else "--"
-                               for key in ["name", "rx_packets", "rx_errors",
-                                           "rx_dropped", "tx_packets",
-                                           "tx_errors", "tx_dropped"]])
+                                for key in ["name", "rx_packets", "rx_errors",
+                                            "rx_dropped", "tx_packets",
+                                            "tx_errors", "tx_dropped"]])
         self.poutput(str(table))
 
     def ovs_show_ports(self, args):

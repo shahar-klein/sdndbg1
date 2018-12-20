@@ -54,6 +54,16 @@ def _get_port_mac_ip(addresses, dynamic_addresses):
     return ",".join(macs), ",".join(ips)
 
 
+def get_chassis_hostname(chassis_name):
+
+    conditions = ("name", "=", str(chassis_name))
+    chassis_hostname = OVNSB_DB.db_find("Chassis",
+                                        conditions).execute(check_error=True)
+    if chassis_hostname:
+        return chassis_hostname[0]['hostname']
+    return ""
+
+
 def _get_port_info_from_sb(PBIdx, port_name):
     try:
         port_binding = list(OVNSB_DB.idl.index_equal("Port_Binding", "logical_port",
@@ -274,6 +284,10 @@ list_parser = ovn_subparsers.add_parser('list', help="List logical routers/switc
 port_parser = ovn_subparsers.add_parser('lp', help="List Logical ports (both router and switch)")
 port_parser.add_argument("-n", dest="resolve", action='store_true', help="Do not resolve hostname")
 port_parser.add_argument('resource', nargs='?', help="Name of the switch or router")
+
+dgp_parser = ovn_subparsers.add_parser('dgp', help="List Distributed gateway ports")
+dgp_parser.add_argument('resource', nargs='?', help="Name of the router")
+
 
 ovs_parser = argparse.ArgumentParser(prog='ovs')
 ovs_subparsers = ovs_parser.add_subparsers(title='sub-commands', help='Ovsinfo utility for sdndbg')
@@ -515,6 +529,46 @@ class Ovninfo(cmd2.Cmd):
         self.poutput(str(table))
 
     port_parser.set_defaults(func=ovn_lp)
+
+
+    def ovn_dgp(self, args):
+        lr_rsrc_list = []
+        fields = ["NAME", "ROUTER_NAME", "#GW", "ACTIVE_CHASSIS", "CHASSIS_LIST"]
+        table = self._get_pretty_table(fields)
+        if args.resource:
+            rsrc = OVNNB_DB.lr_get(args.resource).execute()
+            if rsrc:
+                lr_rsrc_list = [rsrc]
+            else:
+                raise Exception("Invalid resource name")
+        else:
+            lr_rsrc_list = OVNNB_DB.lr_list().execute(check_error=True)
+
+        PBIdx = IndexEntryClass(OVNSB_DB.idl.tables['Port_Binding'])
+        for rsrc in lr_rsrc_list:
+            for port in OVNNB_DB.lrp_list(rsrc.name).execute(check_error=True):
+                if not port.gateway_chassis:
+                	continue
+                port_info = []
+                port_info.append(port.name)
+                port_info.append(rsrc.name)
+                port_info.append(len(port.gateway_chassis))
+                chassis_str = ""
+
+                distributed_port = "cr-{}".format(port.name)
+                _, _, hostname, _ = _get_port_info_from_sb(PBIdx,
+                                                           distributed_port)
+                port_info.append(hostname)
+
+                for chassis in port.gateway_chassis:    
+                    hostname = get_chassis_hostname(chassis.chassis_name)
+                    chassis_str += (hostname + "(" + str(chassis.priority)
+                                        +")" + "\n")
+                port_info.append(chassis_str)
+                table.add_row(port_info)
+        self.poutput(str(table))
+
+    dgp_parser.set_defaults(func=ovn_dgp)
 
     @cmd2.with_argparser(ovn_parser)
     def do_ovn(self, args):

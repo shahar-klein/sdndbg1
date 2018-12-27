@@ -54,14 +54,11 @@ def _get_port_mac_ip(addresses, dynamic_addresses):
     return ",".join(macs), ",".join(ips)
 
 
-def get_chassis_hostname(chassis_name):
-
-    conditions = ("name", "=", str(chassis_name))
-    chassis_hostname = OVNSB_DB.db_find("Chassis",
-                                        conditions).execute(check_error=True)
-    if chassis_hostname:
-        return chassis_hostname[0]['hostname']
-    return ""
+def get_chassis_info(chassis_name):
+    chassis = OVNSB_DB.chassis_get(chassis_name).execute(check_error=True)
+    if chassis:
+        return chassis.hostname, chassis.encaps[0].ip
+    return "", ""
 
 
 def _get_port_info_from_sb(PBIdx, port_name):
@@ -286,6 +283,7 @@ port_parser.add_argument("-n", dest="resolve", action='store_true', help="Do not
 port_parser.add_argument('resource', nargs='?', help="Name of the switch or router")
 
 dgp_parser = ovn_subparsers.add_parser('dgp', help="List Distributed gateway ports")
+dgp_parser.add_argument("-n", dest="resolve", action='store_true', help="Do not resolve hostname")
 dgp_parser.add_argument('resource', nargs='?', help="Name of the router")
 
 
@@ -556,14 +554,21 @@ class Ovninfo(cmd2.Cmd):
                 chassis_str = ""
 
                 distributed_port = "cr-{}".format(port.name)
-                _, _, hostname, _ = _get_port_info_from_sb(PBIdx,
-                                                           distributed_port)
-                port_info.append(hostname)
+                _, _, hostname, hostip = _get_port_info_from_sb(PBIdx,
+                                                                distributed_port)
+                if args.resolve:
+                    port_info.append(hostip)
+                else:
+                    port_info.append(hostname)
 
-                for chassis in port.gateway_chassis:    
-                    hostname = get_chassis_hostname(chassis.chassis_name)
-                    chassis_str += (hostname + "(" + str(chassis.priority)
-                                        +")" + "\n")
+                for gwchassis in port.gateway_chassis:
+                    hostname, hostip = get_chassis_info(gwchassis.chassis_name)
+                    if args.resolve:
+                        chassis_str += (hostip + "(" + str(gwchassis.priority)
+                                            +")" + "\n")
+                    else:
+                        chassis_str += (hostname + "(" + str(gwchassis.priority)
+                                            +")" + "\n")
                 port_info.append(chassis_str)
                 table.add_row(port_info)
         self.poutput(str(table))

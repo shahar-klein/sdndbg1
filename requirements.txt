@@ -2,3 +2,5 @@ ovsdbapp==0.10.0
 ovs==2.10.0
 prettytable
 cmd2
+networkx
+pydot

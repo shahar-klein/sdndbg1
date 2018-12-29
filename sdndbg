@@ -249,24 +249,35 @@ def get_router_from_router_port(port_name):
             if port.uuid == router_port_uuid:
                 return lr.name
 
-def dfs_visit_switch(node, graph, visited):
+def dfs_visit_switch(node, graph, visited, verbose):
     if node in visited:
         return
     visited.append(node)
 
     port_list = OVNNB_DB.lsp_list(node).execute()
-    
+
+    port_record = node + "-vifs"
     for port in port_list:
         if port.type == "router":
             router_port = port.options['router-port']
             router_instance = get_router_from_router_port(router_port)
             graph.add_node(router_instance[:20], shape='ellipse')
             graph.add_edge(node[:20], router_instance[:20], color='red')
-            dfs_visit_router(router_instance, graph, visited)
+            dfs_visit_router(router_instance, graph, visited, verbose)
 
-        else:
-            #TODO later vm-port or localnet port add node, edge correspondingly
-            pass
+        if verbose:
+            if port.type == "localnet":
+                subnet_name = port.external_ids["ngn:subnet_name"]
+                graph.add_node(subnet_name[:20], shape='ellipse')
+                graph.add_edge(node[:20], subnet_name[:20], color='green')
+            else:
+                if graph.has_node(port_record):
+                    graph.node[port_record]['label'] = graph.node[port_record]['label'][:-1] + "|" \
+                                                       + port.name[:20] + "}"
+                else:
+                    graph.add_node(port_record, shape='record')
+                    graph.node[port_record]['label'] =  "{" + port.name[:20] + "}"
+                    graph.add_edge(node[:20], port_record, color='yellow')
 
 def get_switch_from_switch_port(port_name):
     
@@ -283,7 +294,7 @@ def get_switch_from_switch_port(port_name):
                 return ls.name
     return None
 
-def dfs_visit_router(node, graph, visited):
+def dfs_visit_router(node, graph, visited, verbose):
     if node in visited:
         return
     
@@ -296,7 +307,7 @@ def dfs_visit_router(node, graph, visited):
             for peer in port.peer:
                 graph.add_node(peer[:20],shape='ellipse')
                 graph.add_edge(node[:20], peer[:20], color='blue')
-                dfs_visit_router(peer, graph, visited)
+                dfs_visit_router(peer, graph, visited, verbose)
         else:
             # its a switch port
 
@@ -310,19 +321,19 @@ def dfs_visit_router(node, graph, visited):
 
             graph.add_node(switch_instance[:20], shape='box')
             graph.add_edge(node[:20], switch_instance[:20])
-            dfs_visit_switch(switch_instance, graph, visited)
+            dfs_visit_switch(switch_instance, graph, visited, verbose)
 
 
-def dfs_visit(node, graph, visited):
+def dfs_visit(node, graph, visited, verbose):
     ovn_node_switch = OVNNB_DB.ls_get(node).execute()
     if ovn_node_switch:
         graph.add_node(node[:20], shape='box')
-        dfs_visit_switch(node, graph, visited)
+        dfs_visit_switch(node, graph, visited, verbose)
     else:
         ovn_node_router = OVNNB_DB.lr_get(node).execute()
         if ovn_node_router:
             graph.add_node(node[:20], shape='ellipse')
-            dfs_visit_router(node, graph, visited)
+            dfs_visit_router(node, graph, visited, verbose)
         else:
             raise Exception("Invalid Logical Entity specified. Couldn't find any Logical Switch or Router with name %s" % (node))
 
@@ -389,6 +400,7 @@ switch_port_parser.add_argument('resource', nargs='?', help="Name of the switch 
 
 topo_parser = ovn_subparsers.add_parser('topo', help="Create graph of logical topology")
 topo_parser.add_argument(dest='root', help="Specify the root of graph")
+topo_parser.add_argument("-v", dest="verbose", action='store_true', help="Include vm and localnet ports")
 topo_parser.add_argument('--output', default="ovn.dot")
 
 ovs_parser = argparse.ArgumentParser(prog='ovs')
@@ -621,21 +633,25 @@ class Ovninfo(cmd2.Cmd):
                 chassis_str = ""
 
                 distributed_port = "cr-{}".format(port.name)
-                _, _, hostname, hostip = _get_port_info_from_sb(PBIdx,
+                _, _, active_hostname, active_hostip = _get_port_info_from_sb(PBIdx,
                                                                 distributed_port)
-                if args.resolve:
-                    port_info.append(hostip)
-                else:
-                    port_info.append(hostname)
 
                 for gwchassis in port.gateway_chassis:
                     hostname, hostip = get_chassis_info(gwchassis.chassis_name)
-                    if args.resolve:
-                        chassis_hostname_str += (hostip + "(" + str(gwchassis.priority)
-                                            +")" + "\n")
+                    if hostname == active_hostname:
+                        if args.resolve:
+                            port_info.append(hostip + "(" + str(gwchassis.priority) +
+                                              ")")
+                        else:
+                            port_info.append(hostname + "(" + str(gwchassis.priority) +
+                                              ")")
                     else:
-                        chassis_hostname_str += (hostname + "(" + str(gwchassis.priority)
-                                            +")" + "\n")
+                        if args.resolve:
+                            chassis_hostname_str += (hostip + "(" + str(gwchassis.priority)
+                                                     +")" + "\n")
+                        else:
+                            chassis_hostname_str += (hostname + "(" + str(gwchassis.priority)
+                                                     +")" + "\n")
                     chassis_str += gwchassis.chassis_name + "\n"
                 port_info.append(chassis_hostname_str)
                 port_info.append(chassis_str)
@@ -647,7 +663,7 @@ class Ovninfo(cmd2.Cmd):
     def ovn_topo(self, args):
         graph = nx.Graph()
         visited = []
-        dfs_visit(args.root, graph, visited)
+        dfs_visit(args.root, graph, visited, args.verbose)
         nx.nx_pydot.write_dot(graph, args.output)
 
     topo_parser.set_defaults(func=ovn_topo)

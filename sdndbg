@@ -254,7 +254,7 @@ def dfs_visit_switch(node, graph, visited, verbose):
         return
     visited.append(node)
 
-    port_list = OVNNB_DB.lsp_list(node).execute()
+    port_list = OVNNB_DB.lsp_list(node).execute() or []
 
     port_record = node + "-vifs"
     for port in port_list:
@@ -300,14 +300,15 @@ def dfs_visit_router(node, graph, visited, verbose):
     
     visited.append(node)
 
-    port_list = OVNNB_DB.lrp_list(node).execute()
+    port_list = OVNNB_DB.lrp_list(node).execute() or []
     for port in port_list:
         # Peer routers
         if len(port.peer) != 0:
             for peer in port.peer:
-                graph.add_node(peer[:20],shape='ellipse')
-                graph.add_edge(node[:20], peer[:20], color='blue')
-                dfs_visit_router(peer, graph, visited, verbose)
+                router_instance = get_router_from_router_port(peer)
+                graph.add_node(router_instance[:20], shape='ellipse')
+                graph.add_edge(node[:20], router_instance[:20], color='red')
+                dfs_visit_router(router_instance, graph, visited, verbose)
         else:
             # its a switch port
 
